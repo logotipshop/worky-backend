@@ -6,25 +6,17 @@ import sqlite3
 import hashlib
 import secrets
 from datetime import datetime
-import os  # Env o'zgaruvchilar bilan ishlash uchun
 
 app = FastAPI(title="Worky Backend")
 
-# CORS sozlamalari: Netlify va Localhost muammosiz ulanishi uchun
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Render'da disk o'chib ketmasligi uchun vaqtincha /tmp papkasiga yozamiz
-# (Esda tuting: baribir keyinchalik PostgreSQL ga o'tish shart!)
-DB = "/tmp/worky.db" if os.environ.get("RENDER") else "worky.db"
-
-# Admin kalitni xavfsiz qilish: Agar serverda o'rnatilmagan bo'lsa, standart kalit ishlaydi
-ADMIN_KEY = os.environ.get("WORKY_ADMIN_KEY", "WORKY_ADMIN_2026")
+DB = "worky.db"
 
 
 def get_db():
@@ -33,8 +25,6 @@ def get_db():
     return conn
 
 
-# @app.on_event("startup") — Render uvicorn bilan ishga tushganda bazani avtomat yaratadi
-@app.on_event("startup")
 def init_db():
     conn = get_db()
     conn.executescript("""
@@ -72,7 +62,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print("✅ Baza muvaffaqiyatli tayyorlandi!")
+    print("✅ Baza tayyor!")
 
 
 def hash_password(password):
@@ -194,24 +184,9 @@ def request_pro(token: str):
     return {"success": True, "message": "So'rov yuborildi. @logotipshop10 ga screenshot yuboring!"}
 
 
-@app.post("/admin/deactivate-pro")
-def deactivate_pro(data: ProActivateModel):
-    if data.admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Admin kalit noto'g'ri")
-    conn = get_db()
-    user = conn.execute("SELECT * FROM users WHERE id=?", (data.user_id,)).fetchone()
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi")
-    conn.execute("UPDATE users SET is_pro=0, pro_until=NULL WHERE id=?", (data.user_id,))
-    conn.commit()
-    conn.close()
-    return {"success": True, "message": f"{user['name']} Pro o'chirildi!"}
-
-
 @app.post("/admin/activate-pro")
 def activate_pro(data: ProActivateModel):
-    if data.admin_key != ADMIN_KEY:
+    if data.admin_key != "WORKY_ADMIN_2026":
         raise HTTPException(status_code=403, detail="Admin kalit noto'g'ri")
 
     conn = get_db()
@@ -236,7 +211,7 @@ def activate_pro(data: ProActivateModel):
 # ── Admin panel ───────────────────────────────────────────────────
 @app.get("/admin/users")
 def get_users(admin_key: str):
-    if admin_key != ADMIN_KEY:
+    if admin_key != "WORKY_ADMIN_2026":
         raise HTTPException(status_code=403, detail="Ruxsat yo'q")
     conn = get_db()
     users = conn.execute("SELECT id, name, phone, role, is_pro, created_at FROM users").fetchall()
@@ -246,7 +221,7 @@ def get_users(admin_key: str):
 
 @app.get("/admin/payments")
 def get_payments(admin_key: str):
-    if admin_key != ADMIN_KEY:
+    if admin_key != "WORKY_ADMIN_2026":
         raise HTTPException(status_code=403, detail="Ruxsat yo'q")
     conn = get_db()
     payments = conn.execute("""
@@ -278,5 +253,7 @@ def get_jobs(token: str = None):
 
 
 if __name__ == "__main__":
+    init_db()
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

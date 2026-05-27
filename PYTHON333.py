@@ -1,0 +1,1 @@
+print("SALOM LOGOTIPSHOP")
