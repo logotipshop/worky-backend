@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import hashlib
 import secrets
 from datetime import datetime
@@ -50,6 +51,25 @@ def init_db():
             status TEXT DEFAULT 'pending',
             created_at TEXT DEFAULT current_timestamp
         );
+        CREATE TABLE IF NOT EXISTS jobs (
+            id SERIAL PRIMARY KEY,
+            employer_id INTEGER REFERENCES users(id),
+            title TEXT NOT NULL,
+            place TEXT,
+            wage INTEGER,
+            time_range TEXT,
+            slots INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'active',
+            created_at TEXT DEFAULT current_timestamp
+        );
+        CREATE TABLE IF NOT EXISTS applications (
+            id SERIAL PRIMARY KEY,
+            job_id INTEGER REFERENCES jobs(id),
+            worker_id INTEGER REFERENCES users(id),
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT current_timestamp,
+            UNIQUE(job_id, worker_id)
+        );
     """)
     conn.commit()
     cur.close()
@@ -71,15 +91,24 @@ class RegisterModel(BaseModel):
     password: str
     role: str = "worker"
 
-
 class LoginModel(BaseModel):
     phone: str
     password: str
 
-
 class ProActivateModel(BaseModel):
     user_id: int
     admin_key: str
+
+class JobCreateModel(BaseModel):
+    title: str
+    place: str
+    wage: int
+    time_range: str
+    slots: int = 1
+
+class ApplicationStatusModel(BaseModel):
+    application_id: int
+    status: str
 
 
 @app.post("/auth/register")
@@ -181,7 +210,7 @@ def get_users(admin_key: str):
         raise HTTPException(status_code=403, detail="Ruxsat yo'q")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, phone, role, is_pro, created_at FROM users")
+    cur.execute("SELECT id, name, phone, role, is_pro, created_at FROM users ORDER BY id DESC")
     users = cur.fetchall()
     cur.close(); conn.close()
     return [dict(u) for u in users]
@@ -197,6 +226,144 @@ def get_payments(admin_key: str):
     payments = cur.fetchall()
     cur.close(); conn.close()
     return [dict(p) for p in payments]
+
+
+# ── JOBS ──────────────────────────────────────────────────────────
+@app.post("/jobs")
+def create_job(data: JobCreateModel, token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s AND role='employer'", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    cur.execute(
+        "INSERT INTO jobs (employer_id, title, place, wage, time_range, slots) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+        (user["id"], data.title, data.place, data.wage, data.time_range, data.slots)
+    )
+    job_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return {"success": True, "job_id": job_id}
+
+
+@app.get("/jobs")
+def get_jobs(token: str = None):
+    conn = get_db()
+    cur = conn.cursor()
+    is_pro = False
+    if token:
+        cur.execute("SELECT is_pro FROM users WHERE token=%s", (token,))
+        u = cur.fetchone()
+        if u:
+            is_pro = bool(u["is_pro"])
+    cur.execute("SELECT * FROM jobs WHERE status='active' ORDER BY created_at DESC")
+    jobs = cur.fetchall()
+    cur.close(); conn.close()
+    return {"is_pro": is_pro, "jobs": [dict(j) for j in jobs]}
+
+
+@app.get("/employer/jobs")
+def get_employer_jobs(token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s AND role='employer'", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    cur.execute("SELECT * FROM jobs WHERE employer_id=%s ORDER BY created_at DESC", (user["id"],))
+    jobs = cur.fetchall()
+    cur.close(); conn.close()
+    return [dict(j) for j in jobs]
+
+
+@app.get("/employer/applications")
+def get_employer_applications(token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s AND role='employer'", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    cur.execute("""
+        SELECT a.id, a.status, a.created_at,
+               u.name as worker_name, u.phone as worker_phone,
+               j.title as job_title
+        FROM applications a
+        JOIN users u ON u.id = a.worker_id
+        JOIN jobs j ON j.id = a.job_id
+        WHERE j.employer_id = %s
+        ORDER BY a.created_at DESC
+    """, (user["id"],))
+    apps = cur.fetchall()
+    cur.close(); conn.close()
+    return [dict(a) for a in apps]
+
+
+@app.post("/employer/applications/update")
+def update_application(data: ApplicationStatusModel, token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s AND role='employer'", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    cur.execute("UPDATE applications SET status=%s WHERE id=%s", (data.status, data.application_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return {"success": True}
+
+
+# ── APPLICATIONS ──────────────────────────────────────────────────
+@app.post("/apply/{job_id}")
+def apply_job(job_id: int, token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s AND role='worker'", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    if not user["is_pro"]:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=403, detail="Pro kerak")
+    try:
+        cur.execute(
+            "INSERT INTO applications (job_id, worker_id) VALUES (%s,%s)",
+            (job_id, user["id"])
+        )
+        conn.commit()
+    except:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=400, detail="Allaqachon ariza bergansiz")
+    cur.close(); conn.close()
+    return {"success": True}
+
+
+@app.get("/my/applications")
+def my_applications(token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE token=%s", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Token noto'g'ri")
+    cur.execute("""
+        SELECT a.id, a.status, a.job_id,
+               j.title, j.place, j.wage, j.time_range
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        WHERE a.worker_id = %s
+        ORDER BY a.created_at DESC
+    """, (user["id"],))
+    apps = cur.fetchall()
+    cur.close(); conn.close()
+    return [dict(a) for a in apps]
 
 
 if __name__ == "__main__":
