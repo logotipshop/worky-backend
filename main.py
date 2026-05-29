@@ -10,20 +10,19 @@ import os  # Env o'zgaruvchilar bilan ishlash uchun
 
 app = FastAPI(title="Worky Backend")
 
-# CORS sozlamalari: Netlify va Localhost muammosiz ulanishi uchun
+# CORS sozlamalari: Netlify va har qanday frontend muammosiz ulanishi uchun
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Netlify'dan kelayotgan so'rovlarga mutloq ruxsat beradi
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Render'da disk o'chib ketmasligi uchun vaqtincha /tmp papkasiga yozamiz
-# (Esda tuting: baribir keyinchalik PostgreSQL ga o'tish shart!)
 DB = "/tmp/worky.db" if os.environ.get("RENDER") else "worky.db"
 
-# Admin kalitni xavfsiz qilish: Agar serverda o'rnatilmagan bo'lsa, standart kalit ishlaydi
+# Admin kalitni xavfsiz qilish
 ADMIN_KEY = os.environ.get("WORKY_ADMIN_KEY", "WORKY_ADMIN_2026")
 
 
@@ -33,7 +32,6 @@ def get_db():
     return conn
 
 
-# @app.on_event("startup") — Render uvicorn bilan ishga tushganda bazani avtomat yaratadi
 @app.on_event("startup")
 def init_db():
     conn = get_db()
@@ -99,6 +97,16 @@ class LoginModel(BaseModel):
 class ProActivateModel(BaseModel):
     user_id: int
     admin_key: str
+
+
+class JobCreateModel(BaseModel):
+    title: str
+    place: str
+    wage: int
+    time: str
+    category: str
+    is_fake: int = 0
+    admin_key: str  # Faqat admin yangi ish qo'sha olishi uchun
 
 
 # ── Auth ──────────────────────────────────────────────────────────
@@ -258,6 +266,22 @@ def get_payments(admin_key: str):
     return [dict(p) for p in payments]
 
 
+# ✨ Yangi ish e'loni qo'shish (Admin uchun yangi endpoint)
+@app.post("/admin/add-job")
+def add_job(data: JobCreateModel):
+    if data.admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Admin kalit noto'g'ri")
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO jobs (title, place, wage, time, category, is_fake) VALUES (?, ?, ?, ?, ?, ?)",
+        (data.title, data.place, data.wage, data.time, data.category, data.is_fake)
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": f"'{data.title}' e'loni muvaffaqiyatli qo'shildi!"}
+
+
 # ── Jobs ──────────────────────────────────────────────────────────
 @app.get("/jobs")
 def get_jobs(token: str = None):
@@ -269,9 +293,11 @@ def get_jobs(token: str = None):
             is_pro = bool(user["is_pro"])
 
     if is_pro:
-        jobs = conn.execute("SELECT * FROM jobs WHERE is_fake=0").fetchall()
+        # Pro foydalanuvchilarga hamma toza (haqiqiy) ishlar ko'rinadi
+        jobs = conn.execute("SELECT * FROM jobs WHERE is_fake=0 ORDER BY id DESC").fetchall()
     else:
-        jobs = conn.execute("SELECT * FROM jobs").fetchall()
+        # Oddiy foydalanuvchilarga hamma ishlar ko'rinadi
+        jobs = conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()
 
     conn.close()
     return {"is_pro": is_pro, "jobs": [dict(j) for j in jobs]}
@@ -279,4 +305,5 @@ def get_jobs(token: str = None):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
