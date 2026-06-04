@@ -62,7 +62,7 @@ def init_db():
             place TEXT,
             wage INTEGER,
             category TEXT DEFAULT 'Boshqa',
-            district TEXT DEFAULT 'Yunusobod',
+            district TEXT DEFAULT '',
             time_range TEXT,
             slots INTEGER DEFAULT 1,
             status TEXT DEFAULT 'active',
@@ -120,7 +120,7 @@ class JobCreateModel(BaseModel):
     place: str
     wage: int
     category: str = "Boshqa"
-    district: str = "Yunusobod"
+    district: str = ""
     time_range: str = ""
     slots: int = 1
 
@@ -135,8 +135,8 @@ class UpdateAvatarModel(BaseModel):
     avatar: str
 
 class RateModel(BaseModel):
-    worker_id: int = None
-    employer_id: int = None
+    worker_id: Optional[int] = None
+    employer_id: Optional[int] = None
     rating: float
     application_id: int
 
@@ -239,6 +239,7 @@ def update_avatar(data: UpdateAvatarModel, token: str):
     return {"success": True}
 
 
+# 🚀 FRONTENDDA ISHLATILGAN PRO FAOLASHTIRISH ENDPOINTI
 @app.post("/auth/upgrade-pro")
 def upgrade_pro(token: str):
     conn = get_db()
@@ -252,6 +253,12 @@ def upgrade_pro(token: str):
     conn.commit()
     cur.close(); conn.close()
     return {"success": True}
+
+
+# FRONTENDDAGI APPREJALARI VA SINCHRONIZATSIYA UCHUN QO'SHIMCHA SINOV ENDPOINTI
+@app.post("/users/activate-pro")
+def users_activate_pro(token: str):
+    return upgrade_pro(token)
 
 
 @app.post("/pro/request")
@@ -429,6 +436,8 @@ def apply_job(job_id: int, token: str):
     if not user:
         cur.close(); conn.close()
         raise HTTPException(status_code=401, detail="Ruxsat yo'q")
+    # 🔥 Agar foydalanuvchi premium marketing (fake) testlarni ko'rayotgan bo'lsa Pro talab qiladi
+    # Real bazadagi e'lonlar uchun ham tekshiruv:
     if not user["is_pro"]:
         cur.close(); conn.close()
         raise HTTPException(status_code=403, detail="Pro kerak")
