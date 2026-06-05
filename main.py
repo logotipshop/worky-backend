@@ -115,6 +115,11 @@ class ProActivateModel(BaseModel):
     user_id: int
     admin_key: str
 
+# PRO o'chirish uchun yangi model
+class ProDeactivateModel(BaseModel):
+    user_id: int
+    admin_key: str
+
 class JobCreateModel(BaseModel):
     title: str
     place: str
@@ -239,7 +244,6 @@ def update_avatar(data: UpdateAvatarModel, token: str):
     return {"success": True}
 
 
-# 🚀 FRONTENDDA ISHLATILGAN PRO FAOLASHTIRISH ENDPOINTI
 @app.post("/auth/upgrade-pro")
 def upgrade_pro(token: str):
     conn = get_db()
@@ -255,7 +259,22 @@ def upgrade_pro(token: str):
     return {"success": True}
 
 
-# FRONTENDDAGI APPREJALARI VA SINCHRONIZATSIYA UCHUN QO'SHIMCHA SINOV ENDPOINTI
+# 🆕 YANGI QO'SHILDI: Token orqali PRO-ni o'chirish (Downgrade)
+@app.post("/auth/downgrade-pro")
+def downgrade_pro(token: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE token=%s", (token,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=401, detail="Token noto'g'ri")
+    cur.execute("UPDATE users SET is_pro=FALSE, pro_until=NULL WHERE id=%s", (user["id"],))
+    conn.commit()
+    cur.close(); conn.close()
+    return {"success": True, "message": "PRO rejim o'chirildi"}
+
+
 @app.post("/users/activate-pro")
 def users_activate_pro(token: str):
     return upgrade_pro(token)
@@ -292,6 +311,24 @@ def activate_pro(data: ProActivateModel):
     conn.commit()
     cur.close(); conn.close()
     return {"success": True, "message": f"{user['name']} Pro faollashtirildi!"}
+
+
+# 🆕 YANGI QO'SHILDI: Admin ID kiritib PRO-ni faolsizlantiradigan (o'chiradigan) asosiy endpoint
+@app.post("/admin/deactivate-pro")
+def deactivate_pro(data: ProDeactivateModel):
+    if data.admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Admin kalit noto'g'ri")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id=%s", (data.user_id,))
+    user = cur.fetchone()
+    if not user:
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi")
+    cur.execute("UPDATE users SET is_pro=FALSE, pro_until=NULL WHERE id=%s", (data.user_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    return {"success": True, "message": f"{user['name']} PRO rejimi muvaffaqiyatli o'chirildi!"}
 
 
 @app.get("/admin/users")
@@ -436,8 +473,6 @@ def apply_job(job_id: int, token: str):
     if not user:
         cur.close(); conn.close()
         raise HTTPException(status_code=401, detail="Ruxsat yo'q")
-    # 🔥 Agar foydalanuvchi premium marketing (fake) testlarni ko'rayotgan bo'lsa Pro talab qiladi
-    # Real bazadagi e'lonlar uchun ham tekshiruv:
     if not user["is_pro"]:
         cur.close(); conn.close()
         raise HTTPException(status_code=403, detail="Pro kerak")
